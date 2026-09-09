@@ -84,6 +84,18 @@ func (d *database) planQuery(q dal.StructuredQuery) (queryPlan, error) {
 	if q.StartFrom() != "" || q.StartAfter() != "" {
 		return queryPlan{}, fmt.Errorf("%w: collection %q: cursors are not supported", dal.ErrNotSupported, coll.Name)
 	}
+	// A requested column projection cannot be enforced: this adapter has no
+	// schema, so it cannot guarantee a response omits a field the caller did
+	// not ask for — every row it fetches carries whatever fields the
+	// endpoint returned. Per the Phase 1 HTTP bounds ("if a requested
+	// protected predicate/projection cannot be enforced safely, reject it
+	// rather than fetching an unrestricted result and claiming
+	// enforcement"), a non-empty Columns() is refused before dispatch,
+	// rather than silently ignored while returning full, unfiltered rows
+	// that would look like the projection had been honoured.
+	if columns := q.Columns(); len(columns) > 0 {
+		return queryPlan{}, fmt.Errorf("%w: collection %q: column projection (%d requested) cannot be enforced by this adapter and is refused rather than silently ignored", dal.ErrNotSupported, coll.Name, len(columns))
+	}
 
 	equalities := map[string]string{}
 	residual, err := collectEqualities(q.Where(), coll, equalities)

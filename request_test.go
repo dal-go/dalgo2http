@@ -1,7 +1,11 @@
 package dalgo2http
 
 import (
+	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -81,4 +85,46 @@ func TestBuildURL(t *testing.T) {
 			t.Fatalf("buildURL() err = %v, want ErrMissingParam", err)
 		}
 	})
+}
+
+// TestDoLiveFetch_ResponseTooLarge proves the Phase 1 HTTP bounds' "Bound
+// response bytes to 2 MiB": an oversized body fails explicitly with
+// ErrResponseTooLarge rather than being silently truncated by the
+// LimitReader and then failing JSON decoding downstream with a misleading
+// "unexpected end of JSON input".
+func TestDoLiveFetch_ResponseTooLarge(t *testing.T) {
+	oversized := strings.Repeat("a", maxBodyBytes+1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(oversized))
+	}))
+	defer srv.Close()
+
+	coll := Collection{Name: "big", URLTemplate: srv.URL, KeyField: "id", InsecureAllowLoopback: true}
+	_, _, err := doLiveFetch(context.Background(), srv.Client(), coll, srv.URL)
+	if !errors.Is(err, ErrResponseTooLarge) {
+		t.Fatalf("doLiveFetch() err = %v, want ErrResponseTooLarge", err)
+	}
+}
+
+// TestDoLiveFetch_ResponseAtLimitSucceeds proves the limit is exactly
+// maxBodyBytes, not one byte short of it: a body of precisely that size is
+// not rejected.
+func TestDoLiveFetch_ResponseAtLimitSucceeds(t *testing.T) {
+	exact := `{"pad":"` + strings.Repeat("a", maxBodyBytes-10) + `"}`
+	if len(exact) != maxBodyBytes {
+		t.Fatalf("test fixture len = %d, want exactly maxBodyBytes = %d", len(exact), maxBodyBytes)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(exact))
+	}))
+	defer srv.Close()
+
+	coll := Collection{Name: "exact", URLTemplate: srv.URL, KeyField: "id", InsecureAllowLoopback: true}
+	body, _, err := doLiveFetch(context.Background(), srv.Client(), coll, srv.URL)
+	if err != nil {
+		t.Fatalf("doLiveFetch() at exactly maxBodyBytes = %v, want success", err)
+	}
+	if len(body) != maxBodyBytes {
+		t.Fatalf("len(body) = %d, want %d", len(body), maxBodyBytes)
+	}
 }

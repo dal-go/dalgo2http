@@ -4,7 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -187,6 +190,85 @@ func (coll Collection) validate() error {
 	for header, envVar := range coll.Headers {
 		if header == "" || envVar == "" {
 			return fmt.Errorf("%w: collection %q: headers entries require both a header name and an environment variable name", ErrInvalidConfig, coll.Name)
+		}
+	}
+
+	parsed, err := url.Parse(coll.URLTemplate)
+	if err != nil {
+		return fmt.Errorf("%w: collection %q: urlTemplate is not a valid URL: %v", ErrInvalidConfig, coll.Name, err)
+	}
+	if err := coll.validateScheme(parsed); err != nil {
+		return err
+	}
+	if err := coll.validateNoSecretsInQueryString(parsed); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateScheme enforces the Phase 1 HTTP bounds' "the descriptor fixes the
+// HTTPS host/path": only https:// is allowed, unless InsecureAllowLoopback is
+// set AND parsed's host is literally a loopback address — see
+// Collection.InsecureAllowLoopback's doc comment for why, and its scope.
+func (coll Collection) validateScheme(parsed *url.URL) error {
+	switch parsed.Scheme {
+	case "https":
+		return nil
+	case "http":
+		if !coll.InsecureAllowLoopback {
+			return fmt.Errorf("%w: collection %q: urlTemplate must use https:// (got %q); set InsecureAllowLoopback (test-only) for a loopback httptest server", ErrInvalidConfig, coll.Name, parsed.Scheme)
+		}
+		if !isLoopbackHost(parsed.Hostname()) {
+			return fmt.Errorf("%w: collection %q: InsecureAllowLoopback only permits a loopback host (127.0.0.1, ::1, localhost), got %q", ErrInvalidConfig, coll.Name, parsed.Hostname())
+		}
+		return nil
+	default:
+		return fmt.Errorf("%w: collection %q: urlTemplate scheme %q is not supported (want https://, or http:// with InsecureAllowLoopback set for a loopback test server)", ErrInvalidConfig, coll.Name, parsed.Scheme)
+	}
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// secretQueryKeyMarkers lists case-insensitive substrings the Phase 1 HTTP
+// bounds forbid in a query-string parameter name ("Never send secrets in
+// query strings"): a name containing one of these almost always carries a
+// credential a request log, browser history entry, or proxy could capture in
+// plaintext. Collection.Headers (resolved from an environment variable at
+// request time, never a literal) is the documented, correct place for a
+// value like this instead — see descriptor.go's Collection doc comment.
+var secretQueryKeyMarkers = []string{"token", "apikey", "api_key", "secret", "password", "authorization"}
+
+func isSecretLikeName(name string) bool {
+	lower := strings.ToLower(name)
+	for _, marker := range secretQueryKeyMarkers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// validateNoSecretsInQueryString enforces the Phase 1 HTTP bounds' "never
+// send secrets in query strings": neither a declared query-location Param
+// name nor a literal query-string key already present in urlTemplate may
+// look like a credential (see secretQueryKeyMarkers). Path-location Params
+// and header names are out of scope — the contract names query strings
+// specifically, and Headers is the intended place for a credential.
+func (coll Collection) validateNoSecretsInQueryString(parsed *url.URL) error {
+	for name, p := range coll.Params {
+		if p.Location == ParamQuery && isSecretLikeName(name) {
+			return fmt.Errorf("%w: collection %q: query parameter %q looks like a credential name; secrets must never be sent in a query string — use Headers (an environment variable) instead", ErrInvalidConfig, coll.Name, name)
+		}
+	}
+	for key := range parsed.Query() {
+		if isSecretLikeName(key) {
+			return fmt.Errorf("%w: collection %q: urlTemplate's query string has a parameter named %q, which looks like a credential; secrets must never be sent in a query string", ErrInvalidConfig, coll.Name, key)
 		}
 	}
 	return nil

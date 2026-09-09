@@ -7,10 +7,15 @@ Status: v0.x implemented 2026-09-09 (founder decision: a generic DALgo adapter f
 ## Design constraints (do not relax without a recorded decision)
 
 - **Declarative collections.** Each collection is a descriptor: URL template, HTTP method (GET only in v0.x of this adapter), which query fields map to path/query parameters, the JSON path to the rows, the key field, timeout. Descriptors carry no secrets; header values come from the environment.
-- **Fail closed on pushdown.** A `dal.Query` is executed only when every condition can be expressed by the endpoint (equality on declared parameter fields). Anything else returns a typed "not supported" error. The adapter never fetches a superset and filters client-side unless the descriptor explicitly opts in, because an access-policy predicate that cannot be pushed down must refuse, not leak.
+- **Fail closed on pushdown.** A `dal.Query` is executed only when every condition — and every requested column projection — can be expressed by, or safely enforced against, the endpoint (equality on declared parameter fields; no schema means no field-level projection can ever be enforced, so any `SelectColumns()` request is refused, never silently ignored). Anything else returns a typed "not supported" error. The adapter never fetches a superset and filters client-side unless the descriptor explicitly opts in, because an access-policy predicate that cannot be pushed down must refuse, not leak.
 - **Declared capabilities.** Callers can ask the adapter what it supports per collection so a policy layer can decide before executing.
 - **Snapshots.** An optional recorded snapshot store answers when the endpoint is unreachable; every result says whether it came from `live` or `snapshot`.
 - **Read-only.** Writes and transactions that mutate return "not supported".
+- **HTTPS only.** `URLTemplate` must use `https://`; `http://` is refused at config time (`ErrInvalidConfig`), except for `Collection.InsecureAllowLoopback` — a TEST-ONLY escape hatch, never for a real descriptor, and only when the host is literally loopback (127.0.0.1, ::1, localhost). It is not loadable from `LoadConfigYAML`/`LoadConfigJSON`, only from a Go `Collection{}` literal.
+- **Address-guarded dialing.** The default client (`Config.Client` left nil) never connects to a private (RFC1918 + IPv6 ULA), loopback, link-local (including the `169.254.169.254` cloud metadata address), multicast or unspecified address — resolved once and dialed by IP literal, so a later DNS rebind cannot redirect the connection. A caller who supplies their own `Config.Client` is responsible for equivalent protections on it.
+- **No redirects.** The default client refuses every redirect response (`ErrRedirectNotAllowed`, wrapping `ErrUpstreamClient` — never fallback-eligible). There is no config knob to re-enable following redirects in this package; a descriptor must target its final host directly.
+- **Bounded responses.** A live response body over 2 MiB fails explicitly with `ErrResponseTooLarge` rather than being silently truncated and then failing JSON decoding with a misleading error.
+- **No secrets in query strings.** Neither a declared query-location `Param` name nor a literal query-string key already in `URLTemplate` may look like a credential (`token`, `apikey`, `api_key`, `secret`, `password`, `authorization`, case-insensitive substring match) — rejected at config time. `Headers` (an environment variable, never a literal) is the documented place for a credential.
 
 ## Usage
 
@@ -72,10 +77,12 @@ descriptors with recorded fixtures and offline tests.
 | `Headers`          | `map[headerName]envVarName`. A header value is never a literal in a descriptor; an unset/empty variable means the header is simply not sent. |
 | `Timeout`          | Bounds one request to this collection's endpoint. Zero means no adapter-imposed timeout beyond the context's own deadline. |
 | `ClientSideFilter` | Opt-in escape hatch for a `dal.Query` condition that cannot be fully pushed into the URL: the equality parts that CAN be pushed still narrow the request, and the remainder is evaluated in memory. Set this ONLY on a collection where over-fetching cannot leak anything a caller was not already allowed to see (public reference data) — see the "Fail closed on pushdown" design constraint above. |
+| `InsecureAllowLoopback` | TEST-ONLY. Lets `URLTemplate` use `http://` instead of `https://`, and lets the default guarded client dial a loopback address, for THIS collection only — and only when the host is literally loopback. Not loadable from YAML/JSON config; see the "HTTPS only" design constraint above. |
 
 `Config` also loads from YAML or JSON via `LoadConfigYAML`/`LoadConfigJSON`
 (a `collections:` list of the fields above, plus a repo-level `mode:`; a
-collection's `timeout` is a duration string like `"10s"`).
+collection's `timeout` is a duration string like `"10s"`; `InsecureAllowLoopback`
+is deliberately excluded from this schema).
 
 ## Query support
 
@@ -84,9 +91,25 @@ collection's `timeout` is a duration string like `"10s"`).
 - An equality condition (`dal.Equal`) on a declared `Param` field, combined with `AND` (a `GroupCondition` with any other operator, or a bare `OR`, is not pushable and fails closed unless `ClientSideFilter` is set).
 - `Limit`, applied AFTER fetching (never pushed into the request).
 
-It does not support (fails closed with `dal.ErrNotSupported`): joins, `GROUP BY`/`HAVING`, `ORDER BY`, `Offset`, or start cursors.
+It does not support (fails closed with `dal.ErrNotSupported`): joins, `GROUP BY`/`HAVING`, `ORDER BY`, `Offset`, start cursors, or any non-empty `SelectColumns()` projection (this adapter has no schema, so it cannot guarantee an un-requested field is actually omitted from the response — it refuses rather than silently returning full rows that would look like the projection was honoured).
 
 `ExecuteQueryToRecordsetReader` is not implemented (returns `dal.ErrNotSupported`): this adapter's rows are schemaless HTTP/JSON objects, and `recordset.Recordset`'s typed columnar shape is not something a declarative descriptor can derive without a schema. `dalgo2fs`, the reference minimal read-only adapter, makes the same choice for the same reason.
+
+## Errors
+
+Sentinel errors (`errors.Is`-checkable), beyond DALgo's own `dal.ErrNotSupported`:
+
+| Error | Meaning | Fallback-eligible under `ModeLiveThenSnapshot`? |
+|---|---|---|
+| `ErrInvalidConfig` | A `Collection`/`Config` failed validation. | n/a — never reaches a live request. |
+| `ErrUnknownCollection` | A `record.Key`/`dal.Query` named an undeclared collection. | n/a |
+| `ErrMissingParam` | A required URL template parameter had no value. | n/a — never reaches a live request. |
+| `ErrUpstream` | A network error, timeout, or 5xx/429 response. | **Yes** — the only fallback-eligible class. |
+| `ErrUpstreamClient` | A 4xx response, a refused redirect (wraps `ErrRedirectNotAllowed`), or a blocked address (wraps `ErrAddressBlocked`) — every one a caller/config problem, not a transient failure. | No. |
+| `ErrRedirectNotAllowed` | The live endpoint tried to redirect; redirects are always refused. Also wraps `ErrUpstreamClient`. | No. |
+| `ErrAddressBlocked` | The guarded dialer refused a private/loopback/link-local/metadata/multicast/unspecified target address. Also wraps `ErrUpstreamClient`. | No. |
+| `ErrResponseTooLarge` | A live response body exceeded 2 MiB. | No. |
+| `ErrSnapshotMiss` | No recorded snapshot exists for a request. | n/a |
 
 ## Spec
 

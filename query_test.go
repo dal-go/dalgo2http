@@ -10,13 +10,20 @@ import (
 	"github.com/dal-go/dalgo/dal"
 )
 
+// countriesCollection builds a test descriptor targeting url, which may be
+// either a real https://... host (used with noCallClient, never dialed) or
+// an httptest.Server's http://127.0.0.1:<port> URL (used with srv.Client()
+// or the default client) — InsecureAllowLoopback is set unconditionally
+// since it only relaxes anything when the scheme is actually http:// with a
+// loopback host; it is a no-op for the https:// fake-host cases.
 func countriesCollection(url string) Collection {
 	return Collection{
-		Name:        "countries",
-		URLTemplate: url + "/countries/currency/q?country={name}",
-		KeyField:    "name",
-		RowsPath:    "data",
-		Params:      map[string]Param{"name": {Location: ParamQuery}},
+		Name:                  "countries",
+		URLTemplate:           url + "/countries/currency/q?country={name}",
+		KeyField:              "name",
+		RowsPath:              "data",
+		Params:                map[string]Param{"name": {Location: ParamQuery}},
+		InsecureAllowLoopback: true,
 	}
 }
 
@@ -104,6 +111,27 @@ func TestExecuteQueryToRecordsReader_FailsClosed(t *testing.T) {
 	}
 }
 
+// TestExecuteQueryToRecordsReader_ColumnProjectionRefused proves the Phase 1
+// HTTP bounds' "if a requested protected predicate/projection cannot be
+// enforced safely, reject it rather than fetching an unrestricted result and
+// claiming enforcement": this adapter has no schema, so it cannot guarantee
+// a response omits an un-requested field. A non-empty SelectColumns() must
+// be refused BEFORE any GET is issued — proven with noCallClient, which
+// fails the test outright if the adapter ever makes an HTTP request.
+func TestExecuteQueryToRecordsReader_ColumnProjectionRefused(t *testing.T) {
+	coll := countriesCollection("https://example.invalid")
+	db, err := NewDB(Config{Collections: []Collection{coll}, Client: noCallClient(t), Mode: ModeLive})
+	if err != nil {
+		t.Fatalf("NewDB: %v", err)
+	}
+	q := dal.NewQueryBuilder(dal.From(dal.NewRootCollectionRef("countries", ""))).
+		Where(dal.WhereField("name", dal.Equal, "France")).
+		SelectColumns(dal.Column{Expression: dal.Field("currency")})
+	if _, err := db.ExecuteQueryToRecordsReader(context.Background(), q); !isNotSupported(err) {
+		t.Fatalf("ExecuteQueryToRecordsReader() with a column projection = %v, want dal.ErrNotSupported (no request sent)", err)
+	}
+}
+
 func TestExecuteQueryToRecordsReader_UnknownCollection(t *testing.T) {
 	db, err := NewDB(Config{Collections: []Collection{countriesCollection("https://example.invalid")}, Client: noCallClient(t)})
 	if err != nil {
@@ -125,10 +153,11 @@ func TestExecuteQueryToRecordsReader_ClientSideFilter(t *testing.T) {
 	// ClientSideFilter is what makes an equality condition on a field the
 	// endpoint cannot be asked to filter by still answerable.
 	coll := Collection{
-		Name:             "countries-all",
-		URLTemplate:      srv.URL + "/countries",
-		KeyField:         "countryCode",
-		ClientSideFilter: true,
+		Name:                  "countries-all",
+		URLTemplate:           srv.URL + "/countries",
+		KeyField:              "countryCode",
+		ClientSideFilter:      true,
+		InsecureAllowLoopback: true,
 	}
 
 	db, err := NewDB(Config{Collections: []Collection{coll}, Client: srv.Client(), Mode: ModeLive})
@@ -169,7 +198,7 @@ func TestExecuteQueryToRecordsReader_LimitAppliedAfterFetch(t *testing.T) {
 		_, _ = w.Write([]byte(`[{"countryCode":"FR"},{"countryCode":"DE"},{"countryCode":"ES"}]`))
 	}))
 	defer srv.Close()
-	coll := Collection{Name: "all", URLTemplate: srv.URL + "/countries", KeyField: "countryCode"}
+	coll := Collection{Name: "all", URLTemplate: srv.URL + "/countries", KeyField: "countryCode", InsecureAllowLoopback: true}
 	db, err := NewDB(Config{Collections: []Collection{coll}, Client: srv.Client(), Mode: ModeLive})
 	if err != nil {
 		t.Fatalf("NewDB: %v", err)

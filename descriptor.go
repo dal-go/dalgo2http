@@ -92,6 +92,23 @@ type Collection struct {
 	// this only on a collection where over-fetching cannot leak anything a
 	// caller was not already allowed to see.
 	ClientSideFilter bool `yaml:"clientSideFilter,omitempty" json:"clientSideFilter,omitempty"`
+
+	// InsecureAllowLoopback is a TEST-ONLY escape hatch, never intended for a
+	// real descriptor. Setting it relaxes two of the Phase 1 HTTP bounds for
+	// THIS collection alone, and only when URLTemplate's host is literally a
+	// loopback address (127.0.0.1, ::1, or "localhost" — validate() rejects
+	// it otherwise even with this set): (1) URLTemplate may use http://
+	// instead of https://; (2) the default guarded dialer (see
+	// security.go's guardedDialContext) permits dialing that loopback
+	// address. It exists only so this package's own test suite — and a
+	// consumer's — can exercise real HTTP against an httptest.Server, which
+	// always speaks plain HTTP on 127.0.0.1. It is deliberately NOT
+	// (de)serializable from LoadConfigYAML/LoadConfigJSON (see collectionFile
+	// in config.go): a production descriptor loaded from a file can never
+	// enable it, only Go code building a Collection literal directly can.
+	// Every other blocked address class (private, link-local, metadata,
+	// multicast, unspecified) stays blocked even with this set.
+	InsecureAllowLoopback bool `yaml:"-" json:"-"`
 }
 
 // placeholderRe matches a {name} placeholder in a URL template.
