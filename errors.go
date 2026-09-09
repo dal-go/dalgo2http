@@ -31,4 +31,26 @@ var (
 
 	// ErrSnapshotMiss indicates no recorded snapshot exists for a request.
 	ErrSnapshotMiss = errors.New("dalgo2http: no snapshot available")
+
+	// ErrRedirectNotAllowed indicates a live request received a redirect
+	// response. Redirects are disabled by default (Phase 1 HTTP bounds:
+	// "Redirects are disabled for the demo") — a redirecting endpoint is a
+	// caller/config problem (the descriptor should target the final host
+	// directly), never a transient failure, so doLiveFetch reports it
+	// wrapping ErrUpstreamClient, never ErrUpstream: it is never
+	// fallback-eligible.
+	ErrRedirectNotAllowed = errors.New("dalgo2http: redirects are not allowed")
+
+	// ErrResponseTooLarge indicates a live response body exceeded
+	// maxBodyBytes. Reported explicitly rather than silently truncated
+	// (which would otherwise fail JSON decoding downstream with a
+	// misleading "unexpected end of JSON input").
+	ErrResponseTooLarge = errors.New("dalgo2http: response body exceeds the size limit")
+
+	// ErrAddressBlocked indicates the guarded dialer refused to connect to a
+	// resolved address because it is private, loopback, link-local or a
+	// metadata-service address (Phase 1 HTTP bounds: "Deny private,
+	// loopback, link-local and metadata-service addresses"). A caller/config
+	// problem, not a transient failure.
+	ErrAddressBlocked = errors.New("dalgo2http: target address is blocked (private/loopback/link-local/metadata)")
 )

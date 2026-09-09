@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"time"
 
 	"github.com/dal-go/dalgo/dal"
@@ -30,15 +29,17 @@ type database struct {
 var _ dal.Backend = (*database)(nil)
 
 // NewDB validates cfg and returns a dal.DB backed by it. cfg.Client defaults
-// to http.DefaultClient when nil; cfg.Mode defaults to ModeLiveThenSnapshot
-// when empty.
+// to a guarded client (see security.go's newDefaultClient — a custom
+// DialContext rejecting private/loopback/link-local/metadata addresses, and
+// redirects disabled) when nil, per the Phase 1 HTTP bounds; cfg.Mode
+// defaults to ModeLiveThenSnapshot when empty.
 func NewDB(cfg Config) (dal.DB, error) {
 	index, err := validateConfig(cfg)
 	if err != nil {
 		return nil, err
 	}
 	if cfg.Client == nil {
-		cfg.Client = http.DefaultClient
+		cfg.Client = newDefaultClient()
 	}
 	if cfg.Mode == "" {
 		cfg.Mode = ModeLiveThenSnapshot

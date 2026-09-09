@@ -158,6 +158,71 @@ func TestValidateConfig(t *testing.T) {
 			want: ErrInvalidConfig,
 		},
 		{
+			name: "plain http rejected by default",
+			cfg: Config{Collections: []Collection{{
+				Name: "c", URLTemplate: "http://example.test/{id}", KeyField: "id",
+				Params: map[string]Param{"id": {Location: ParamPath}},
+			}}},
+			want: ErrInvalidConfig,
+		},
+		{
+			name: "unsupported scheme rejected",
+			cfg: Config{Collections: []Collection{{
+				Name: "c", URLTemplate: "ftp://example.test/{id}", KeyField: "id",
+				Params: map[string]Param{"id": {Location: ParamPath}},
+			}}},
+			want: ErrInvalidConfig,
+		},
+		{
+			name: "InsecureAllowLoopback with a non-loopback host is still rejected",
+			cfg: Config{Collections: []Collection{{
+				Name: "c", URLTemplate: "http://example.test/{id}", KeyField: "id",
+				Params:                map[string]Param{"id": {Location: ParamPath}},
+				InsecureAllowLoopback: true,
+			}}},
+			want: ErrInvalidConfig,
+		},
+		{
+			name: "InsecureAllowLoopback with a loopback host is accepted",
+			cfg: Config{Collections: []Collection{{
+				Name: "c", URLTemplate: "http://127.0.0.1:1234/{id}", KeyField: "id",
+				Params:                map[string]Param{"id": {Location: ParamPath}},
+				InsecureAllowLoopback: true,
+			}}},
+			want: nil,
+		},
+		{
+			name: "declared query param named apikey is rejected",
+			cfg: Config{Collections: []Collection{{
+				Name: "c", URLTemplate: "https://example.test/{id}", KeyField: "id",
+				Params: map[string]Param{"id": {Location: ParamPath}, "apikey": {Location: ParamQuery}},
+			}}},
+			want: ErrInvalidConfig,
+		},
+		{
+			name: "literal query string key named token is rejected",
+			cfg: Config{Collections: []Collection{{
+				Name: "c", URLTemplate: "https://example.test/data?token=abc123", KeyField: "id",
+			}}},
+			want: ErrInvalidConfig,
+		},
+		{
+			name: "literal query string key containing api_key is rejected",
+			cfg: Config{Collections: []Collection{{
+				Name: "c", URLTemplate: "https://example.test/data?client_api_key=abc123", KeyField: "id",
+			}}},
+			want: ErrInvalidConfig,
+		},
+		{
+			name: "header named Authorization is NOT rejected (headers are the correct place)",
+			cfg: Config{Collections: []Collection{{
+				Name: "c", URLTemplate: "https://example.test/{id}", KeyField: "id",
+				Params:  map[string]Param{"id": {Location: ParamPath}},
+				Headers: map[string]string{"Authorization": "MY_TOKEN_ENV"},
+			}}},
+			want: nil,
+		},
+		{
 			name: "valid",
 			cfg: Config{Collections: []Collection{{
 				Name: "c", URLTemplate: "https://example.test/{id}", KeyField: "id",

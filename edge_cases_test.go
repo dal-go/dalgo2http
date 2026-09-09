@@ -55,7 +55,7 @@ func TestDoLiveFetch_Timeout(t *testing.T) {
 		_, _ = w.Write([]byte(`{}`))
 	}))
 	defer srv.Close()
-	coll := Collection{Name: "slow", URLTemplate: srv.URL, KeyField: "id", Timeout: time.Millisecond}
+	coll := Collection{Name: "slow", URLTemplate: srv.URL, KeyField: "id", Timeout: time.Millisecond, InsecureAllowLoopback: true}
 	_, _, err := doLiveFetch(context.Background(), srv.Client(), coll, srv.URL)
 	if !errors.Is(err, ErrUpstream) {
 		t.Fatalf("doLiveFetch() err = %v, want ErrUpstream", err)
@@ -84,7 +84,7 @@ func TestRecord_PropagatesBuildAndFetchErrors(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer down.Close()
-	fxColl := Collection{Name: "fx", URLTemplate: down.URL, KeyField: "base"}
+	fxColl := Collection{Name: "fx", URLTemplate: down.URL, KeyField: "base", InsecureAllowLoopback: true}
 	if _, err := Record(context.Background(), down.Client(), fxColl, map[string]string{}, t.TempDir()); !errors.Is(err, ErrUpstream) {
 		t.Fatalf("Record() err = %v, want ErrUpstream", err)
 	}

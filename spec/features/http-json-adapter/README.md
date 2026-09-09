@@ -35,11 +35,23 @@ mapping, JSON row path, key field, environment-sourced headers, timeout); a
 `dal.Query` executes only when every `Where()` condition reduces to equality
 on a declared parameter field, combined with `AND` — anything else fails
 closed with `dal.ErrNotSupported` unless the collection opts into
-`ClientSideFilter` (public data only); a `Capabilities` lookup lets a caller
-ask what is pushable before executing; an optional recorded-snapshot store
-answers when a live request fails for a transient reason, and every result
-reports whether it came from `live` or `snapshot` (`Provenance`); writes and
-mutating transactions return `dal.ErrNotSupported` unconditionally.
+`ClientSideFilter` (public data only); a `SelectColumns()` projection over
+plain field references is enforced at the adapter boundary — an
+un-requested field is dropped from each row after fetch, before it is ever
+converted into the returned record — while a column this adapter cannot
+evaluate (anything other than a bare field reference) is refused; a
+`Capabilities` lookup lets a caller ask what is pushable before
+executing; an optional recorded-snapshot store answers when a live request
+fails for a transient reason, and every result reports whether it came from
+`live` or `snapshot` (`Provenance`); writes and mutating transactions return
+`dal.ErrNotSupported` unconditionally.
+
+The Phase 1 HTTP bounds (`datatug/datatug`'s
+`spec/features/core-investigation-loop/api-contract.md`, "Bounded lookups and
+HTTP") additionally require: `https://`-only descriptors; a guarded dialer
+denying private/loopback/link-local/metadata-service addresses including DNS
+rebinding; no redirects; a 2 MiB response bound; provider capability checks
+before dispatch; and no secrets in query strings. See the ACs below.
 
 ## Acceptance Criteria
 
@@ -81,6 +93,107 @@ Countries, whose public v3.1 API is fully deprecated; see
 (`Mode: ModeSnapshot`, no network)
 **Then** `Get`/`ExecuteQueryToRecordsReader` return rows shaped like any
 other DALgo source, keyed and filtered exactly as the descriptor declares.
+
+### AC: https-only-descriptors
+
+**Given** a `Collection` whose `URLTemplate` uses `http://` (or any scheme
+other than `https://`)
+**When** it is validated (`LoadConfigYAML`/`LoadConfigJSON`/`NewDB`)
+**Then** it is refused with `ErrInvalidConfig`, UNLESS `InsecureAllowLoopback`
+is set AND the host is literally loopback (127.0.0.1, ::1, localhost) — a
+test-only escape hatch not reachable from YAML/JSON config at all (see
+`config_test.go`'s `TestValidateConfig` cases `"plain http rejected by
+default"`, `"unsupported scheme rejected"`, `"InsecureAllowLoopback with a
+non-loopback host is still rejected"` and `"InsecureAllowLoopback with a
+loopback host is accepted"`).
+
+### AC: address-guard-denies-private-and-metadata
+
+**Given** the default client (`Config.Client` left nil)
+**When** it dials any request, resolving the target host at most once
+**Then** it refuses every private (RFC1918 + IPv6 ULA), loopback, link-local
+(including the `169.254.169.254` cloud metadata address), multicast or
+unspecified candidate address, dialing only a validated IP literal — never
+re-resolving the hostname at dial time, so a later DNS rebind cannot redirect
+the connection (see `security_test.go`'s `TestIsBlockedIP` for the exhaustive
+address-class table, and
+`TestGuardedDialContext_ResolvesOnceAndDialsOnlyTheValidatedIP` for the
+single-resolution proof). `Collection.InsecureAllowLoopback` relaxes ONLY the
+loopback check, for httptest use (see `TestNewDefaultClient_RealLoopbackRequestSucceeds`);
+every other class, including the metadata address, stays blocked even then
+(see `TestNewDefaultClient_MetadataAddressRejected`).
+
+### AC: no-redirects
+
+**Given** a live endpoint that responds with a redirect
+**When** the default client (or any client with `CheckRedirect: denyRedirect`)
+requests it
+**Then** the redirect is not followed; the result wraps
+`ErrRedirectNotAllowed` and `ErrUpstreamClient` (never `ErrUpstream`, so
+`ModeLiveThenSnapshot` must not treat it as fallback-eligible even when a
+matching snapshot exists) — see `redirect_test.go`'s
+`TestDoLiveFetch_RedirectRefused`, `TestNewDefaultClient_RedirectRefused` and
+`TestFetchRows_RedirectDoesNotTriggerSnapshotFallback`.
+
+### AC: bounded-response-size
+
+**Given** a live response body over 2 MiB
+**When** it is read
+**Then** the request fails explicitly with `ErrResponseTooLarge` rather than
+being silently truncated by a `LimitReader` and then failing JSON decoding
+downstream with a misleading error; a body of exactly 2 MiB still succeeds
+(see `request_test.go`'s `TestDoLiveFetch_ResponseTooLarge` and
+`TestDoLiveFetch_ResponseAtLimitSucceeds`). Row-shape validation errors
+(`extractRows`) name the `rowsPath` and the specific failing segment/row
+index (see `jsonpath_test.go`'s `TestExtractRows`, `wantErrContains`).
+
+### AC: projection-applied-at-adapter-boundary
+
+**Given** a `dal.StructuredQuery` with a non-empty `SelectColumns()` over
+plain field references (a bare `dal.FieldRef` per column, not a computed or
+otherwise-unevaluable expression)
+**When** `ExecuteQueryToRecordsReader` runs
+**Then** exactly one live GET is still issued (unchanged from an
+un-projected query — projection narrows the returned rows, never triggers an
+extra request), and every un-requested field is dropped from each row after
+`extractRows`, before it is converted into the returned record — an
+un-requested field never reaches the reader, `KeyField` is retained even
+when not itself requested (it identifies the row, not a value under
+projection), and a requested field absent from the live response's row stays
+absent in the projected row, never synthesized as an explicit null (see
+`query_test.go`'s `TestExecuteQueryToRecordsReader_ProjectionDropsUnrequestedFields`,
+`TestExecuteQueryToRecordsReader_ProjectionMakesExactlyOneGET` and
+`TestExecuteQueryToRecordsReader_ProjectionAbsentFieldStaysAbsent`).
+
+A column whose `Expression` is not a bare field reference — something this
+adapter genuinely cannot evaluate against an already-fetched row — is still
+refused with `dal.ErrNotSupported` before any GET, matching the fail-closed
+rule predicates already follow (see
+`TestExecuteQueryToRecordsReader_NonFieldColumnStillRefused`, which uses
+`noCallClient` to fail the test outright if a request is ever sent). This
+adapter has no schema, so a predicate that cannot be pushed into the request
+URL, or an unevaluable column expression, is still refused rather than
+fetched as a superset and silently narrowed — a plain field-name projection
+is the one case this adapter can genuinely enforce at its own boundary, so it
+is applied rather than refused (a S72 review correction: the first version
+of this AC refused every projection outright, which would have broken any
+consumer building `SelectColumns()` for an HTTP-source query — see the
+Amendment section of the PR this AC shipped in).
+
+### AC: no-secrets-in-query-string
+
+**Given** a `Collection` whose declared query-location `Param` name, or whose
+`URLTemplate`'s own literal query-string key, looks like a credential
+(`token`, `apikey`, `api_key`, `secret`, `password`, `authorization`,
+case-insensitive substring match)
+**When** it is validated
+**Then** it is refused with `ErrInvalidConfig`; a header with the same name
+is NOT refused, since `Headers` (an environment variable, never a literal) is
+the documented, correct place for a credential (see `config_test.go`'s
+`TestValidateConfig` cases `"declared query param named apikey is
+rejected"`, `"literal query string key named token is rejected"`, `"literal
+query string key containing api_key is rejected"` and `"header named
+Authorization is NOT rejected"`).
 
 ## Open Questions
 

@@ -5,9 +5,14 @@
 //
 // The brief this stream implements named api.frankfurter.app; that host now
 // 301-redirects to api.frankfurter.dev (verified live while building this
-// package), and Go's http.Client follows the redirect transparently, so
-// either host works — this descriptor targets api.frankfurter.dev directly
-// to avoid a needless redirect hop on every request.
+// package). This descriptor targets api.frankfurter.dev directly, which now
+// matters for more than avoiding a needless hop: the Phase 1 HTTP bounds
+// disable redirects by default (see the root package's README.md "Design
+// constraints" and security.go's denyRedirect), so a descriptor pointed at
+// api.frankfurter.app would now fail outright with ErrRedirectNotAllowed
+// instead of following the redirect. See example_test.go's
+// TestFrankfurter_NoRedirectNeeded for a fake-server proof this descriptor
+// resolves in one hop.
 package frankfurter
 
 import (
