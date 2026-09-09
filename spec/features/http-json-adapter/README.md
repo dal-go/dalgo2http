@@ -35,9 +35,12 @@ mapping, JSON row path, key field, environment-sourced headers, timeout); a
 `dal.Query` executes only when every `Where()` condition reduces to equality
 on a declared parameter field, combined with `AND` — anything else fails
 closed with `dal.ErrNotSupported` unless the collection opts into
-`ClientSideFilter` (public data only); a non-empty `SelectColumns()`
-projection is always refused, since this adapter has no schema to enforce it
-against; a `Capabilities` lookup lets a caller ask what is pushable before
+`ClientSideFilter` (public data only); a `SelectColumns()` projection over
+plain field references is enforced at the adapter boundary — an
+un-requested field is dropped from each row after fetch, before it is ever
+converted into the returned record — while a column this adapter cannot
+evaluate (anything other than a bare field reference) is refused; a
+`Capabilities` lookup lets a caller ask what is pushable before
 executing; an optional recorded-snapshot store answers when a live request
 fails for a transient reason, and every result reports whether it came from
 `live` or `snapshot` (`Provenance`); writes and mutating transactions return
@@ -144,17 +147,38 @@ downstream with a misleading error; a body of exactly 2 MiB still succeeds
 (`extractRows`) name the `rowsPath` and the specific failing segment/row
 index (see `jsonpath_test.go`'s `TestExtractRows`, `wantErrContains`).
 
-### AC: projection-refused-before-dispatch
+### AC: projection-applied-at-adapter-boundary
 
-**Given** a `dal.StructuredQuery` with a non-empty `SelectColumns()`
+**Given** a `dal.StructuredQuery` with a non-empty `SelectColumns()` over
+plain field references (a bare `dal.FieldRef` per column, not a computed or
+otherwise-unevaluable expression)
 **When** `ExecuteQueryToRecordsReader` runs
-**Then** it is refused with `dal.ErrNotSupported` before any HTTP request is
-made — this adapter has no schema and cannot guarantee an un-requested field
-is actually absent from the response, so it refuses rather than silently
-returning full rows that would look like the projection was honoured (see
-`query_test.go`'s `TestExecuteQueryToRecordsReader_ColumnProjectionRefused`,
-which uses `noCallClient` to fail the test outright if a request is ever
-sent).
+**Then** exactly one live GET is still issued (unchanged from an
+un-projected query — projection narrows the returned rows, never triggers an
+extra request), and every un-requested field is dropped from each row after
+`extractRows`, before it is converted into the returned record — an
+un-requested field never reaches the reader, `KeyField` is retained even
+when not itself requested (it identifies the row, not a value under
+projection), and a requested field absent from the live response's row stays
+absent in the projected row, never synthesized as an explicit null (see
+`query_test.go`'s `TestExecuteQueryToRecordsReader_ProjectionDropsUnrequestedFields`,
+`TestExecuteQueryToRecordsReader_ProjectionMakesExactlyOneGET` and
+`TestExecuteQueryToRecordsReader_ProjectionAbsentFieldStaysAbsent`).
+
+A column whose `Expression` is not a bare field reference — something this
+adapter genuinely cannot evaluate against an already-fetched row — is still
+refused with `dal.ErrNotSupported` before any GET, matching the fail-closed
+rule predicates already follow (see
+`TestExecuteQueryToRecordsReader_NonFieldColumnStillRefused`, which uses
+`noCallClient` to fail the test outright if a request is ever sent). This
+adapter has no schema, so a predicate that cannot be pushed into the request
+URL, or an unevaluable column expression, is still refused rather than
+fetched as a superset and silently narrowed — a plain field-name projection
+is the one case this adapter can genuinely enforce at its own boundary, so it
+is applied rather than refused (a S72 review correction: the first version
+of this AC refused every projection outright, which would have broken any
+consumer building `SelectColumns()` for an HTTP-source query — see the
+Amendment section of the PR this AC shipped in).
 
 ### AC: no-secrets-in-query-string
 

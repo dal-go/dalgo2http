@@ -32,6 +32,13 @@ func (d *database) ExecuteQueryToRecordsReader(ctx context.Context, query dal.Qu
 			return nil, err
 		}
 	}
+	// Projection is applied AFTER residual filtering (a client-side
+	// condition may reference a field the caller did not SELECT) and BEFORE
+	// rowsToRecords, so an un-requested field never reaches the returned
+	// record at all — see applyProjection.
+	if plan.projection != nil {
+		rows = applyProjection(rows, plan.projection, plan.collection.KeyField)
+	}
 	records, err := rowsToRecords(plan.collection, rows, q.IntoRecord)
 	if err != nil {
 		return nil, err
@@ -46,14 +53,17 @@ func (d *database) ExecuteQueryToRecordsReader(ctx context.Context, query dal.Qu
 }
 
 // queryPlan is the outcome of successfully planning a structured query: the
-// resolved Collection, the equality constraints to push into the URL, and
+// resolved Collection, the equality constraints to push into the URL,
 // whether any part of Where() could not be reduced to a pushable equality
 // (residual) — meaningful only when the collection allows ClientSideFilter,
-// since planQuery itself refuses a residual condition otherwise.
+// since planQuery itself refuses a residual condition otherwise — and the
+// requested column projection, if any (see applyProjection; nil means every
+// field the response returns).
 type queryPlan struct {
 	collection Collection
 	equalities map[string]string
 	residual   bool
+	projection []string
 }
 
 // planQuery fails closed on anything this adapter cannot express as one GET:
@@ -84,17 +94,22 @@ func (d *database) planQuery(q dal.StructuredQuery) (queryPlan, error) {
 	if q.StartFrom() != "" || q.StartAfter() != "" {
 		return queryPlan{}, fmt.Errorf("%w: collection %q: cursors are not supported", dal.ErrNotSupported, coll.Name)
 	}
-	// A requested column projection cannot be enforced: this adapter has no
-	// schema, so it cannot guarantee a response omits a field the caller did
-	// not ask for — every row it fetches carries whatever fields the
-	// endpoint returned. Per the Phase 1 HTTP bounds ("if a requested
+	// A requested column projection IS enforceable at this adapter's own
+	// boundary, even though the adapter has no schema: unlike a predicate
+	// (which must be pushed into the request URL or evaluated against a
+	// fetch that already happened), a projection only needs to drop fields
+	// from the rows this adapter already holds after extractRows, before
+	// they ever leave the adapter — see applyProjection, called from
+	// ExecuteQueryToRecordsReader after any residual filtering. Only a bare
+	// field reference is something this adapter can enforce that way; a
+	// computed/aliased expression is not, and is refused rather than
+	// silently ignored, per the Phase 1 HTTP bounds ("if a requested
 	// protected predicate/projection cannot be enforced safely, reject it
 	// rather than fetching an unrestricted result and claiming
-	// enforcement"), a non-empty Columns() is refused before dispatch,
-	// rather than silently ignored while returning full, unfiltered rows
-	// that would look like the projection had been honoured.
-	if columns := q.Columns(); len(columns) > 0 {
-		return queryPlan{}, fmt.Errorf("%w: collection %q: column projection (%d requested) cannot be enforced by this adapter and is refused rather than silently ignored", dal.ErrNotSupported, coll.Name, len(columns))
+	// enforcement").
+	projection, err := columnFieldNames(q.Columns(), coll)
+	if err != nil {
+		return queryPlan{}, err
 	}
 
 	equalities := map[string]string{}
@@ -105,7 +120,57 @@ func (d *database) planQuery(q dal.StructuredQuery) (queryPlan, error) {
 	if residual && !coll.ClientSideFilter {
 		return queryPlan{}, fmt.Errorf("%w: collection %q: condition cannot be fully pushed into the URL, and this collection does not set ClientSideFilter", dal.ErrNotSupported, coll.Name)
 	}
-	return queryPlan{collection: coll, equalities: equalities, residual: residual}, nil
+	return queryPlan{collection: coll, equalities: equalities, residual: residual, projection: projection}, nil
+}
+
+// columnFieldNames extracts the plain field names q.Columns() requests, or
+// nil when none were requested (select every field the response returns).
+// Only a bare dal.FieldRef column is enforceable at this adapter's boundary
+// (see applyProjection); any other expression this adapter cannot evaluate
+// — a computed value, an alias over something other than a plain field —
+// fails closed with dal.ErrNotSupported rather than being silently ignored.
+func columnFieldNames(columns []dal.Column, coll Collection) ([]string, error) {
+	if len(columns) == 0 {
+		return nil, nil
+	}
+	names := make([]string, 0, len(columns))
+	for _, col := range columns {
+		field, ok := col.Expression.(dal.FieldRef)
+		if !ok {
+			return nil, fmt.Errorf("%w: collection %q: column %s is not a plain field reference and cannot be enforced by this adapter", dal.ErrNotSupported, coll.Name, col.String())
+		}
+		names = append(names, field.Name())
+	}
+	return names, nil
+}
+
+// applyProjection keeps only fields and keyField in each row, dropping every
+// other field before a row ever leaves the adapter — the enforcement point
+// for a requested column projection (see columnFieldNames/planQuery).
+// keyField is always retained even when not explicitly requested: it
+// identifies the row (rowsToRecords needs it to build the record's key), it
+// is not a value being redacted or exposed, and every row already carries it
+// regardless of what was SELECTed. A requested field absent from a given
+// row's live response is left absent in the projected row too — never
+// synthesized as a null value — so a caller can still distinguish "this
+// field doesn't exist here" from "this field is explicitly null".
+func applyProjection(rows []map[string]any, fields []string, keyField string) []map[string]any {
+	keep := make(map[string]bool, len(fields)+1)
+	for _, f := range fields {
+		keep[f] = true
+	}
+	keep[keyField] = true
+	out := make([]map[string]any, len(rows))
+	for i, row := range rows {
+		projected := make(map[string]any, len(keep))
+		for k, v := range row {
+			if keep[k] {
+				projected[k] = v
+			}
+		}
+		out[i] = projected
+	}
+	return out
 }
 
 // collectEqualities walks an AND-only tree of `declaredParamField == constant`
