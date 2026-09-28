@@ -113,3 +113,87 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+type dummyCondition struct{}
+
+func (dummyCondition) String() string { return "dummy" }
+
+func TestFilterRows_MoreBranches(t *testing.T) {
+	rows := []map[string]any{{"name": "France", "population": 68.0}}
+
+	// evalCondition: sub-condition in OR errors
+	badSub := dal.Comparison{Left: dal.Constant{Value: "x"}, Operator: dal.Equal, Right: dal.Constant{Value: "x"}}
+	orWithErr := dal.NewGroupCondition(dal.Or, badSub)
+	if _, err := filterRows(rows, orWithErr); err == nil {
+		t.Fatal("expected error in OR sub-condition")
+	}
+
+	// evalCondition: unsupported condition shape
+	if _, err := filterRows(rows, dummyCondition{}); err == nil {
+		t.Fatal("expected error for unsupported condition shape")
+	}
+
+	// In operator: missing field in row
+	inMissing := dal.Comparison{Left: dal.Field("missing"), Operator: dal.In, Right: dal.NewArray([]string{"France"})}
+	got, err := filterRows(rows, inMissing)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("expected 0 matches for missing field in In, got %v, err %v", got, err)
+	}
+
+	// sliceContains: arr not a slice
+	if sliceContains(123, "val") {
+		t.Fatal("expected false for non-slice")
+	}
+}
+
+func TestCompareEqual_NumericAndNonNumeric(t *testing.T) {
+	// both numeric
+	if !compareEqual(10, 10) {
+		t.Fatal("expected true")
+	}
+	if compareEqual(10, 20) {
+		t.Fatal("expected false")
+	}
+	// toFloat(a) is true, toFloat(b) is false
+	if compareEqual(10, "not-a-number") {
+		t.Fatal("expected false")
+	}
+	// string equality
+	if !compareEqual("abc", "abc") {
+		t.Fatal("expected true")
+	}
+}
+
+func TestToFloat_AllTypes(t *testing.T) {
+	vals := []any{
+		float32(1), int(1), int8(1), int16(1), int32(1), int64(1),
+		uint(1), uint8(1), uint16(1), uint32(1), uint64(1),
+	}
+	for _, v := range vals {
+		f, ok := toFloat(v)
+		if !ok || f != 1.0 {
+			t.Fatalf("toFloat(%T(%v)) = (%v, %v), want (1.0, true)", v, v, f, ok)
+		}
+	}
+	if _, ok := toFloat("string"); ok {
+		t.Fatal("expected false for string")
+	}
+}
+
+func TestCompareOrdered_AllOperatorsAndTypes(t *testing.T) {
+	ops := []dal.Operator{dal.GreaterThen, dal.GreaterOrEqual, dal.LessThen, dal.LessOrEqual}
+	for _, op := range ops {
+		if _, err := compareOrdered(op, 10.0, 10.0); err != nil {
+			t.Fatalf("compareOrdered(%s) float failed: %v", op, err)
+		}
+		if _, err := compareOrdered(op, "b", "b"); err != nil {
+			t.Fatalf("compareOrdered(%s) string failed: %v", op, err)
+		}
+	}
+
+	// string compared to non-string
+	if _, err := compareOrdered(dal.GreaterThen, "a", 10); err == nil {
+		t.Fatal("expected error comparing string to int")
+	}
+}
+

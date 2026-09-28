@@ -22,3 +22,5 @@ jobs:
 
     with:
       cgo_enabled: false
+      code_coverage: true
+      min_test_coverage_percent: 100
