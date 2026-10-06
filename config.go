@@ -66,6 +66,7 @@ type configFile struct {
 }
 
 type collectionFile struct {
+	Decoder          Decoder           `yaml:"decoder,omitempty" json:"decoder,omitempty"`
 	Name             string            `yaml:"name" json:"name"`
 	URLTemplate      string            `yaml:"urlTemplate" json:"urlTemplate"`
 	Method           string            `yaml:"method,omitempty" json:"method,omitempty"`
@@ -101,6 +102,7 @@ func configFromFile(file configFile) (Config, error) {
 	cfg := Config{Mode: Mode(file.Mode)}
 	for _, cf := range file.Collections {
 		coll := Collection{
+			Decoder:          cf.Decoder,
 			Name:             cf.Name,
 			URLTemplate:      cf.URLTemplate,
 			Method:           Method(cf.Method),
@@ -140,6 +142,9 @@ func validateConfig(cfg Config) (map[string]Collection, error) {
 	}
 	index := make(map[string]Collection, len(cfg.Collections))
 	for _, coll := range cfg.Collections {
+		if coll.Decoder == DecoderECBEuroFXRef && (cfg.Mode != ModeLive || cfg.Snapshots != nil) {
+			return nil, fmt.Errorf("%w: collection %q: ECB daily decoding requires live mode without a snapshot store", ErrInvalidConfig, coll.Name)
+		}
 		if err := coll.validate(); err != nil {
 			return nil, err
 		}
@@ -157,6 +162,9 @@ func validateConfig(cfg Config) (map[string]Collection, error) {
 // a placeholder — a path Param that is never substituted anywhere is very
 // likely a config mistake, so this is rejected rather than silently ignored).
 func (coll Collection) validate() error {
+	if err := coll.validateDecoder(); err != nil {
+		return err
+	}
 	if coll.Name == "" {
 		return fmt.Errorf("%w: collection name is required", ErrInvalidConfig)
 	}

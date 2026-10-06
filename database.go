@@ -169,7 +169,7 @@ func (d *database) fetchRows(ctx context.Context, coll Collection, params map[st
 		if err != nil {
 			return nil, Provenance{}, fmt.Errorf("dalgo2http: collection %q: %w", coll.Name, err)
 		}
-		rows, err := extractRows(body, coll.RowsPath)
+		rows, err := decodeRows(body, coll)
 		prov := Provenance{Collection: coll.Name, Source: SourceSnapshot, StatusCode: meta.StatusCode, FetchedAt: meta.FetchedAt}
 		d.observe(ctx, prov)
 		return rows, prov, err
@@ -179,17 +179,24 @@ func (d *database) fetchRows(ctx context.Context, coll Collection, params map[st
 	if err != nil {
 		return nil, Provenance{}, err
 	}
-	body, status, liveErr := doLiveFetch(ctx, d.cfg.Client, coll, rawURL)
+	prov := Provenance{Collection: coll.Name, Source: SourceLive}
+	body, status, liveErr := doLiveFetch(ctx, d.cfg.Client, coll, rawURL, &prov)
 	if liveErr == nil {
-		rows, err := extractRows(body, coll.RowsPath)
-		prov := Provenance{Collection: coll.Name, Source: SourceLive, StatusCode: status, FetchedAt: time.Now().UTC()}
+		rows, err := decodeRows(body, coll)
+		prov.StatusCode = status
+		prov.FetchedAt = time.Now().UTC()
+		if coll.Decoder == DecoderECBEuroFXRef && err == nil {
+			prov.Decoder = coll.Decoder
+			prov.BaseCurrency = "EUR"
+			prov.ReferenceDate = rows[0]["time"].(string)
+		}
 		d.observe(ctx, prov)
 		return rows, prov, err
 	}
 
 	if d.cfg.Mode == ModeLiveThenSnapshot && !errors.Is(liveErr, ErrUpstreamClient) {
 		if body, meta, snapErr := readSnapshot(d.cfg.Snapshots, key); snapErr == nil {
-			rows, err := extractRows(body, coll.RowsPath)
+			rows, err := decodeRows(body, coll)
 			prov := Provenance{Collection: coll.Name, Source: SourceSnapshot, StatusCode: meta.StatusCode, FetchedAt: meta.FetchedAt}
 			d.observe(ctx, prov)
 			return rows, prov, err

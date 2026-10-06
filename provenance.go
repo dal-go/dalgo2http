@@ -21,6 +21,21 @@ type Provenance struct {
 	Source     Source
 	StatusCode int
 	FetchedAt  time.Time
+
+	// Decoder identifies a named source decoder; BaseCurrency and ReferenceDate
+	// describe the decoded daily response, not a canonical semantic mapping.
+	Decoder       Decoder
+	BaseCurrency  string
+	ReferenceDate string
+
+	// Transport observation describes the single bounded live response consumed.
+	// It stores no body and supplies no shared wire protocol or rights attestation.
+	UpstreamURL  string
+	ContentType  string
+	LastModified string
+	ETag         string
+	SHA256       string
+	Bytes        int
 }
 
 // Observer is called once per collection read (Get, Exists, or a query) with

@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/dal-go/dalgo/dal"
 )
 
 // snapshotEnvelope is the on-disk shape of one recorded fixture: the raw
@@ -72,6 +74,9 @@ func readSnapshot(fsys fs.FS, key string) ([]byte, snapshotMeta, error) {
 // development/test tool for building fixtures (see examples/), not part of
 // request-serving at runtime.
 func Record(ctx context.Context, client *http.Client, coll Collection, params map[string]string, dir string) (path string, err error) {
+	if coll.Decoder == DecoderECBEuroFXRef {
+		return "", fmt.Errorf("%w: collection %q: ECB source recording is not authorized", dal.ErrNotSupported, coll.Name)
+	}
 	rawURL, err := buildURL(coll, params)
 	if err != nil {
 		return "", err
