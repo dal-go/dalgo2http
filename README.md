@@ -1,6 +1,6 @@
 # dalgo2http
 
-HTTP/JSON adapter for [DALgo](https://github.com/dal-go/dalgo): expose read-only REST endpoints (public reference data, internal JSON APIs) as DALgo collections so that the same `dal.Query` model, and the same access policies, apply to them as to SQL, SQLite, Firestore and inGitDB sources.
+HTTP adapter for [DALgo](https://github.com/dal-go/dalgo): expose read-only JSON endpoints and supported named XML resources as DALgo collections so that the same `dal.Query` model, and the same access policies, apply to them as to SQL, SQLite, Firestore and inGitDB sources.
 
 Status: v0.x implemented 2026-09-09 (founder decision: a generic DALgo adapter for HTTP rather than a consumer-private fetcher). First consumer: DataTug's demo knowledge project. The two example descriptors under `examples/` (CountriesNow currency-by-country, Frankfurter exchange rates) replace REST Countries — restcountries.com's public v3.1 API is now fully deprecated; see `examples/countries/README.md`.
 
@@ -70,6 +70,7 @@ descriptors with recorded fixtures and offline tests.
 | Field              | Meaning |
 |--------------------|---------|
 | `Name`             | Collection name a `record.Key` or `dal.Query.From()` names. |
+| `Decoder`          | Empty or `json` preserves JSON decoding. `ecb-eurofxref/1` selects the bounded daily XML contract below. |
 | `URLTemplate`      | Request URL with `{name}` placeholders for declared `Params`. A placeholder can sit in the path or be embedded in a literal query string (e.g. `...?symbols={to}`); its declared `Param.Location` decides the escaping used, not its position in the string. |
 | `Method`           | Empty or `dalgo2http.MethodGET` — this adapter is read-only GET-only in v0.x. |
 | `Params`           | `map[string]Param{name: {Location: ParamPath \| ParamQuery}}`. A `ParamQuery` entry whose name never appears in `URLTemplate` is instead appended as an extra `?name=value` when a query supplies a value for it. |
@@ -86,6 +87,39 @@ collection's `timeout` is a duration string like `"10s"`; `InsecureAllowLoopback
 is deliberately excluded from this schema).
 
 ## Query support
+
+### Daily ECB XML
+
+`DecoderECBEuroFXRef` (`ecb-eurofxref/1`) decodes one daily
+`Envelope/Cube/Cube(time)/Cube(currency,rate)` resource. It returns native
+`time`, `currency`, and `rate` fields as strings, preserving decimal spelling.
+The read's `Provenance` separately reports `BaseCurrency: "EUR"` and
+`ReferenceDate`; it creates no EUR quote or derived rate. Currency keys identify
+rows within this single daily response, rather than stable historical records.
+
+Configure `ModeLive`, no `Snapshots`, `KeyField: "currency"`, a positive
+`Timeout`, and a fixed public URL with no query, fragment, credentials, secret
+headers, `Params`, or `RowsPath`. Set `ClientSideFilter: true` only when public
+reference-data access permits fetching the whole response. Queries then apply
+filtering, projection and limit to one response in memory. `Get`, `Exists`,
+sorting, joins, offsets, cursors and columnar recordset queries remain explicitly
+unsupported; no endpoint filtering parameters are fabricated.
+
+The decoder checks namespaces, a single valid date, distinct uppercase
+three-letter currency codes excluding EUR, positive lexical decimals, at most
+256 quotes and four XML element levels. DTDs, directives, entity references and
+unexpected elements/attributes fail with `ErrInvalidXML`. The existing 2 MiB,
+HTTPS, redirect and DNS protections apply. The default client has no retained
+HTTP cache and requests `Cache-Control: no-store, no-cache`; custom clients
+must preserve these security and retention guarantees.
+
+`Record` refuses ECB source recording before any request or filesystem write.
+Each successful live ECB fetch reports transient URL, content type, Last-Modified,
+ETag, body hash and byte count in `Provenance`, with each captured header capped
+at 1024 bytes. These observations retain no source bytes, promise no replay or
+origin freshness, and define no shared rights/admission protocol. Consumers
+must independently enforce source terms and prohibit retained result copies,
+pagination snapshots, caches, history or exports unless authorized.
 
 `ExecuteQueryToRecordsReader` (via `dal.StructuredQuery`) supports:
 

@@ -2,6 +2,7 @@ package dalgo2http
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -85,7 +86,7 @@ func buildURL(coll Collection, params map[string]string) (string, error) {
 // instead: each is a caller/config error, and serving a stale snapshot for
 // one would mask the problem rather than surface it, so none is ever
 // fallback-eligible.
-func doLiveFetch(ctx context.Context, client *http.Client, coll Collection, rawURL string) (body []byte, statusCode int, err error) {
+func doLiveFetch(ctx context.Context, client *http.Client, coll Collection, rawURL string, observation ...*Provenance) (body []byte, statusCode int, err error) {
 	ctx = contextWithInsecureLoopback(ctx, coll.InsecureAllowLoopback)
 	if coll.Timeout > 0 {
 		var cancel context.CancelFunc
@@ -100,6 +101,10 @@ func doLiveFetch(ctx context.Context, client *http.Client, coll Collection, rawU
 		if v := os.Getenv(envVar); v != "" {
 			req.Header.Set(header, v)
 		}
+	}
+	if coll.Decoder == DecoderECBEuroFXRef {
+		req.Header.Set("Cache-Control", "no-store, no-cache")
+		req.Header.Set("Pragma", "no-cache")
 	}
 	if client == nil {
 		client = newDefaultClient()
@@ -128,6 +133,18 @@ func doLiveFetch(ctx context.Context, client *http.Client, coll Collection, rawU
 		return b, resp.StatusCode, fmt.Errorf("%w: collection %q: status %d", ErrUpstream, coll.Name, resp.StatusCode)
 	case resp.StatusCode >= 400:
 		return b, resp.StatusCode, fmt.Errorf("%w: collection %q: status %d", ErrUpstreamClient, coll.Name, resp.StatusCode)
+	}
+	if len(observation) > 0 && coll.Decoder == DecoderECBEuroFXRef {
+		p := observation[0]
+		p.UpstreamURL = rawURL
+		p.ContentType = resp.Header.Get("Content-Type")
+		p.LastModified = resp.Header.Get("Last-Modified")
+		p.ETag = resp.Header.Get("ETag")
+		if len(p.ContentType) > 1024 || len(p.LastModified) > 1024 || len(p.ETag) > 1024 {
+			return nil, resp.StatusCode, fmt.Errorf("%w: collection %q: observation header exceeds 1024 bytes", ErrUpstreamClient, coll.Name)
+		}
+		p.SHA256 = fmt.Sprintf("%x", sha256.Sum256(b))
+		p.Bytes = len(b)
 	}
 	return b, resp.StatusCode, nil
 }

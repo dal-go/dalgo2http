@@ -41,6 +41,11 @@ type Collection struct {
 	// Name is the collection name a record.Key or dal.Query.From() names.
 	Name string `yaml:"name" json:"name"`
 
+	// Decoder selects a closed response decoding contract. Empty and DecoderJSON
+	// preserve the JSON behavior. DecoderECBEuroFXRef returns native time,
+	// currency and lexical rate fields from one daily ECB document.
+	Decoder Decoder `yaml:"decoder,omitempty" json:"decoder,omitempty"`
+
 	// URLTemplate is the request URL, with {name} placeholders for every
 	// declared Param that is substituted directly into the template (a path
 	// segment, or a value embedded in a literal query string such as
