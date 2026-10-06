@@ -104,7 +104,7 @@ func TestECBQueryLiveOnly(t *testing.T) {
 		if r.URL.RawQuery != "" {
 			t.Errorf("fabricated upstream filter: %s", r.URL.RawQuery)
 		}
-		fmt.Fprint(w, syntheticECB(`<Cube currency="AAA" rate="001.23000"/><Cube currency="ZZZ" rate="0.00001"/>`))
+		_, _ = fmt.Fprint(w, syntheticECB(`<Cube currency="AAA" rate="001.23000"/><Cube currency="ZZZ" rate="0.00001"/>`))
 	}))
 	defer srv.Close()
 	coll := ecbCollection(srv.URL)
@@ -154,7 +154,7 @@ func TestECBQueryLiveOnly(t *testing.T) {
 		t.Fatalf("unauthorized Record: path=%q error=%v", path, err)
 	}
 	// A decoding failure returns no successful ECB response metadata.
-	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, `<invalid/>`) })
+	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = fmt.Fprint(w, `<invalid/>`) })
 	if _, err = db.ExecuteQueryToRecordsReader(context.Background(), newQuery("daily", nil, 0)); !errors.Is(err, ErrInvalidXML) {
 		t.Fatalf("malformed upstream=%v", err)
 	}
@@ -203,7 +203,7 @@ func TestDecoderConfiguration(t *testing.T) {
 func TestObservationHeaderBound(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("ETag", strings.Repeat("x", 1025))
-		fmt.Fprint(w, syntheticECB(`<Cube currency="AAA" rate="1"/>`))
+		_, _ = fmt.Fprint(w, syntheticECB(`<Cube currency="AAA" rate="1"/>`))
 	}))
 	defer srv.Close()
 	db, err := NewDB(Config{Mode: ModeLive, Collections: []Collection{ecbCollection(srv.URL)}})
