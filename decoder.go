@@ -12,7 +12,16 @@ type Decoder string
 const (
 	DecoderJSON         Decoder = "json"
 	DecoderECBEuroFXRef Decoder = "ecb-eurofxref/1"
+	// DecoderStrictCSV3 preserves three native string columns with exact
+	// Value,Description,Reference headers. It is a transport shape, not a
+	// statement that Value is a canonical or globally unique identifier.
+	DecoderStrictCSV3 Decoder = "strict-csv-three-column/1"
 )
+
+// liveOnlyDecoder profiles must never read or create recorded source copies.
+func liveOnlyDecoder(decoder Decoder) bool {
+	return decoder == DecoderECBEuroFXRef || decoder == DecoderStrictCSV3
+}
 
 func (coll Collection) validateDecoder() error {
 	switch coll.Decoder {
@@ -27,6 +36,8 @@ func (coll Collection) validateDecoder() error {
 			return fmt.Errorf("%w: collection %q: ECB daily decoding requires a fixed public URL without credentials, query, fragment, or secret headers", ErrInvalidConfig, coll.Name)
 		}
 		return nil
+	case DecoderStrictCSV3:
+		return coll.validateStrictCSV3()
 	default:
 		return fmt.Errorf("%w: collection %q: decoder %q is not supported", ErrInvalidConfig, coll.Name, coll.Decoder)
 	}
@@ -35,6 +46,9 @@ func (coll Collection) validateDecoder() error {
 func decodeRows(body []byte, coll Collection) ([]map[string]any, error) {
 	if coll.Decoder == DecoderECBEuroFXRef {
 		return decodeECBDaily(body)
+	}
+	if coll.Decoder == DecoderStrictCSV3 {
+		return decodeStrictCSV3(body)
 	}
 	return extractRows(body, coll.RowsPath)
 }

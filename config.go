@@ -142,8 +142,8 @@ func validateConfig(cfg Config) (map[string]Collection, error) {
 	}
 	index := make(map[string]Collection, len(cfg.Collections))
 	for _, coll := range cfg.Collections {
-		if coll.Decoder == DecoderECBEuroFXRef && (cfg.Mode != ModeLive || cfg.Snapshots != nil) {
-			return nil, fmt.Errorf("%w: collection %q: ECB daily decoding requires live mode without a snapshot store", ErrInvalidConfig, coll.Name)
+		if liveOnlyDecoder(coll.Decoder) && (cfg.Mode != ModeLive || cfg.Snapshots != nil) {
+			return nil, fmt.Errorf("%w: collection %q: decoder %q requires live mode without a snapshot store", ErrInvalidConfig, coll.Name, coll.Decoder)
 		}
 		if err := coll.validate(); err != nil {
 			return nil, err

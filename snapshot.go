@@ -74,8 +74,8 @@ func readSnapshot(fsys fs.FS, key string) ([]byte, snapshotMeta, error) {
 // development/test tool for building fixtures (see examples/), not part of
 // request-serving at runtime.
 func Record(ctx context.Context, client *http.Client, coll Collection, params map[string]string, dir string) (path string, err error) {
-	if coll.Decoder == DecoderECBEuroFXRef {
-		return "", fmt.Errorf("%w: collection %q: ECB source recording is not authorized", dal.ErrNotSupported, coll.Name)
+	if liveOnlyDecoder(coll.Decoder) {
+		return "", fmt.Errorf("%w: collection %q: source recording is not authorized", dal.ErrNotSupported, coll.Name)
 	}
 	rawURL, err := buildURL(coll, params)
 	if err != nil {

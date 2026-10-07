@@ -1,6 +1,6 @@
 # dalgo2http
 
-HTTP adapter for [DALgo](https://github.com/dal-go/dalgo): expose read-only JSON endpoints and supported named XML resources as DALgo collections so that the same `dal.Query` model, and the same access policies, apply to them as to SQL, SQLite, Firestore and inGitDB sources.
+HTTP adapter for [DALgo](https://github.com/dal-go/dalgo): expose read-only JSON endpoints and supported named XML and CSV resources as DALgo collections so that the same `dal.Query` model, and the same access policies, apply to them as to SQL, SQLite, Firestore and inGitDB sources.
 
 Status: v0.x implemented 2026-09-09 (founder decision: a generic DALgo adapter for HTTP rather than a consumer-private fetcher). First consumer: DataTug's demo knowledge project. The two example descriptors under `examples/` (CountriesNow currency-by-country, Frankfurter exchange rates) replace REST Countries — restcountries.com's public v3.1 API is now fully deprecated; see `examples/countries/README.md`.
 
@@ -15,7 +15,7 @@ Status: v0.x implemented 2026-09-09 (founder decision: a generic DALgo adapter f
 - **HTTPS only.** `URLTemplate` must use `https://`; `http://` is refused at config time (`ErrInvalidConfig`), except for `Collection.InsecureAllowLoopback` — a TEST-ONLY escape hatch, never for a real descriptor, and only when the host is literally loopback (127.0.0.1, ::1, localhost). It is not loadable from `LoadConfigYAML`/`LoadConfigJSON`, only from a Go `Collection{}` literal.
 - **Address-guarded dialing.** The default client (`Config.Client` left nil) never connects to a private (RFC1918 + IPv6 ULA), loopback, link-local (including the `169.254.169.254` cloud metadata address), multicast or unspecified address — resolved once and dialed by IP literal, so a later DNS rebind cannot redirect the connection. A caller who supplies their own `Config.Client` is responsible for equivalent protections on it.
 - **No redirects.** The default client refuses every redirect response (`ErrRedirectNotAllowed`, wrapping `ErrUpstreamClient` — never fallback-eligible). There is no config knob to re-enable following redirects in this package; a descriptor must target its final host directly.
-- **Bounded responses.** A live response body over 2 MiB fails explicitly with `ErrResponseTooLarge` rather than being silently truncated and then failing JSON decoding with a misleading error.
+- **Bounded responses.** A live JSON/XML response body over 2 MiB fails explicitly with `ErrResponseTooLarge` rather than being silently truncated and then failing decoding with a misleading error. The strict three-column CSV profile has a 64 KiB bound.
 - **No secrets in query strings.** Neither a declared query-location `Param` name nor a literal query-string key already in `URLTemplate` may look like a credential (`token`, `apikey`, `api_key`, `secret`, `password`, `authorization`, case-insensitive substring match) — rejected at config time. `Headers` (an environment variable, never a literal) is the documented place for a credential.
 
 ## Usage
@@ -70,7 +70,7 @@ descriptors with recorded fixtures and offline tests.
 | Field              | Meaning |
 |--------------------|---------|
 | `Name`             | Collection name a `record.Key` or `dal.Query.From()` names. |
-| `Decoder`          | Empty or `json` preserves JSON decoding. `ecb-eurofxref/1` selects the bounded daily XML contract below. |
+| `Decoder`          | Empty or `json` preserves JSON decoding. `ecb-eurofxref/1` selects the bounded daily XML contract below; `strict-csv-three-column/1` selects the CSV transport contract below. |
 | `URLTemplate`      | Request URL with `{name}` placeholders for declared `Params`. A placeholder can sit in the path or be embedded in a literal query string (e.g. `...?symbols={to}`); its declared `Param.Location` decides the escaping used, not its position in the string. |
 | `Method`           | Empty or `dalgo2http.MethodGET` — this adapter is read-only GET-only in v0.x. |
 | `Params`           | `map[string]Param{name: {Location: ParamPath \| ParamQuery}}`. A `ParamQuery` entry whose name never appears in `URLTemplate` is instead appended as an extra `?name=value` when a query supplies a value for it. |
@@ -121,6 +121,32 @@ origin freshness, and define no shared rights/admission protocol. Consumers
 must independently enforce source terms and prohibit retained result copies,
 pagination snapshots, caches, history or exports unless authorized.
 
+### Strict three-column CSV
+
+`DecoderStrictCSV3` (`strict-csv-three-column/1`) accepts a UTF-8 RFC-style
+CSV response with the exact ordered header `Value,Description,Reference` and
+preserves every field as a string, including lexical `Value` ranges. It rejects
+malformed quoting, missing, duplicate or extra header fields, rows with an
+unexpected column count, empty or duplicate `Value` fields, NUL/invalid UTF-8,
+responses over 64 KiB and more than 512 rows. Duplicate `Value` refusal only
+prevents ambiguous transport keys within one response; it does not establish
+source identity or semantics.
+
+Configure `ModeLive`, no `Snapshots`, `KeyField: "Value"`,
+`ClientSideFilter: true`, a positive `Timeout` at most 10 seconds, and a fixed
+HTTPS URL with no query, fragment, credentials, `Params`, `RowsPath` or
+`Headers`. `Get` and `Exists` are unsupported because no point-read URL is
+declared. `Record` refuses before any request or write. One explicit query
+fetches one response, with no-store request headers, redirect refusal, and
+transport `Provenance` (URL, content type, Last-Modified, ETag, SHA-256 and
+byte count). A supplied HTTP client must still protect its transport and
+avoid retaining response data.
+
+This decoder defines only a reusable wire shape. A consumer must separately
+fix and authorize the exact upstream endpoint, source rights and access
+policy. It neither binds an IANA source nor grants permission to query,
+retain, republish or infer meaning from its rows.
+
 `ExecuteQueryToRecordsReader` (via `dal.StructuredQuery`) supports:
 
 - An equality condition (`dal.Equal`) on a declared `Param` field, combined with `AND` (a `GroupCondition` with any other operator, or a bare `OR`, is not pushable and fails closed unless `ClientSideFilter` is set).
@@ -145,7 +171,8 @@ Sentinel errors (`errors.Is`-checkable), beyond DALgo's own `dal.ErrNotSupported
 | `ErrUpstreamClient` | A 4xx response, a refused redirect (wraps `ErrRedirectNotAllowed`), or a blocked address (wraps `ErrAddressBlocked`) — every one a caller/config problem, not a transient failure. | No. |
 | `ErrRedirectNotAllowed` | The live endpoint tried to redirect; redirects are always refused. Also wraps `ErrUpstreamClient`. | No. |
 | `ErrAddressBlocked` | The guarded dialer refused a private/loopback/link-local/metadata/multicast/unspecified target address. Also wraps `ErrUpstreamClient`. | No. |
-| `ErrResponseTooLarge` | A live response body exceeded 2 MiB. | No. |
+| `ErrResponseTooLarge` | A live response body exceeded its decoder's limit (2 MiB for JSON/XML, 64 KiB for strict CSV). | No. |
+| `ErrInvalidCSV` | A strict CSV response violated its shape, encoding or row bound. | No. |
 | `ErrSnapshotMiss` | No recorded snapshot exists for a request. | n/a |
 
 ## Spec

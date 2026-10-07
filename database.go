@@ -189,6 +189,8 @@ func (d *database) fetchRows(ctx context.Context, coll Collection, params map[st
 			prov.Decoder = coll.Decoder
 			prov.BaseCurrency = "EUR"
 			prov.ReferenceDate = rows[0]["time"].(string)
+		} else if coll.Decoder == DecoderStrictCSV3 && err == nil {
+			prov.Decoder = coll.Decoder
 		}
 		d.observe(ctx, prov)
 		return rows, prov, err

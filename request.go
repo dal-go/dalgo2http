@@ -19,6 +19,13 @@ import (
 // decoding downstream with a misleading error.
 const maxBodyBytes = 2 << 20 // 2 MiB
 
+func responseByteLimit(decoder Decoder) int64 {
+	if decoder == DecoderStrictCSV3 {
+		return maxStrictCSV3Bytes
+	}
+	return maxBodyBytes
+}
+
 // buildURL renders coll.URLTemplate with params. A {name} placeholder is
 // substituted using the escaping its declared Param.Location calls for
 // (url.PathEscape for "path", url.QueryEscape for "query" — this matters
@@ -102,12 +109,19 @@ func doLiveFetch(ctx context.Context, client *http.Client, coll Collection, rawU
 			req.Header.Set(header, v)
 		}
 	}
-	if coll.Decoder == DecoderECBEuroFXRef {
+	if liveOnlyDecoder(coll.Decoder) {
 		req.Header.Set("Cache-Control", "no-store, no-cache")
 		req.Header.Set("Pragma", "no-cache")
 	}
 	if client == nil {
 		client = newDefaultClient()
+	}
+	if liveOnlyDecoder(coll.Decoder) {
+		// Preserve the caller's transport but enforce this profile's redirect
+		// refusal even when a custom client would otherwise follow one.
+		copy := *client
+		copy.CheckRedirect = denyRedirect
+		client = &copy
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -121,12 +135,13 @@ func doLiveFetch(ctx context.Context, client *http.Client, coll Collection, rawU
 		return nil, 0, fmt.Errorf("%w: collection %q: %v", ErrUpstream, coll.Name, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	b, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes+1))
+	limit := responseByteLimit(coll.Decoder)
+	b, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return nil, resp.StatusCode, fmt.Errorf("%w: collection %q: read response body: %v", ErrUpstream, coll.Name, err)
 	}
-	if len(b) > maxBodyBytes {
-		return nil, resp.StatusCode, fmt.Errorf("%w: collection %q: response exceeds %d bytes", ErrResponseTooLarge, coll.Name, maxBodyBytes)
+	if int64(len(b)) > limit {
+		return nil, resp.StatusCode, fmt.Errorf("%w: collection %q: response exceeds %d bytes", ErrResponseTooLarge, coll.Name, limit)
 	}
 	switch {
 	case resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests:
@@ -134,7 +149,7 @@ func doLiveFetch(ctx context.Context, client *http.Client, coll Collection, rawU
 	case resp.StatusCode >= 400:
 		return b, resp.StatusCode, fmt.Errorf("%w: collection %q: status %d", ErrUpstreamClient, coll.Name, resp.StatusCode)
 	}
-	if len(observation) > 0 && coll.Decoder == DecoderECBEuroFXRef {
+	if len(observation) > 0 && liveOnlyDecoder(coll.Decoder) {
 		p := observation[0]
 		p.UpstreamURL = rawURL
 		p.ContentType = resp.Header.Get("Content-Type")
