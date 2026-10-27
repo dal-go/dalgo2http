@@ -213,24 +213,32 @@ func TestExtractRows_Null(t *testing.T) {
 
 type dummyQuery struct{}
 
-func (dummyQuery) String() string                                                                 { return "dummy" }
-func (dummyQuery) Offset() int                                                                    { return 0 }
-func (dummyQuery) Limit() int                                                                     { return 0 }
-func (dummyQuery) GetRecordsReader(context.Context, dal.QueryExecutor) (dal.RecordsReader, error)   { return nil, nil }
-func (dummyQuery) GetRecordsetReader(context.Context, dal.QueryExecutor) (dal.RecordsetReader, error) { return nil, nil }
+func (dummyQuery) String() string { return "dummy" }
+func (dummyQuery) Offset() int    { return 0 }
+func (dummyQuery) Limit() int     { return 0 }
+func (dummyQuery) GetRecordsReader(context.Context, dal.QueryExecutor) (dal.RecordsReader, error) {
+	return nil, nil
+}
+func (dummyQuery) GetRecordsetReader(context.Context, dal.QueryExecutor) (dal.RecordsetReader, error) {
+	return nil, nil
+}
 
 func TestExecuteQueryToRecordsReader_EdgeCases(t *testing.T) {
 	coll := countriesCollection("https://example.invalid")
-	db, _ := NewDB(Config{Collections: []Collection{coll}, Client: noCallClient(t)})
+	// Test the native backend boundary. The dal.DB facade can now plan
+	// joins and aggregations itself before calling this adapter.
+	db := &database{cfg: Config{Client: noCallClient(t)}, collections: map[string]Collection{coll.Name: coll}}
 
 	// Query is not StructuredQuery
 	if _, err := db.ExecuteQueryToRecordsReader(context.Background(), dummyQuery{}); !isNotSupported(err) {
 		t.Fatalf("expected ErrNotSupported, got %v", err)
 	}
 
-	// Joins not supported
-	joinedSource := dal.NewJoinedSource(dal.NewRootCollectionRef("other", ""), dal.JoinInner)
-	qJoins := dal.NewQueryBuilder(dal.From(dal.NewRootCollectionRef("countries", "")).Join(joinedSource)).
+	// Native HTTP joins are not supported. Exercise the backend directly:
+	// dal.DB may plan a join itself before calling the adapter.
+	joinedSource := dal.NewJoinedSource(dal.NewRootCollectionRef("other", "o"), dal.JoinInner,
+		dal.NewComparison(dal.NewFieldRef("c", "id"), dal.Equal, dal.NewFieldRef("o", "id")))
+	qJoins := dal.NewQueryBuilder(dal.From(dal.NewRootCollectionRef("countries", "c")).Join(joinedSource)).
 		SelectIntoRecord(nil)
 	if _, err := db.ExecuteQueryToRecordsReader(context.Background(), qJoins); !isNotSupported(err) {
 		t.Fatalf("expected ErrNotSupported for joins, got %v", err)
@@ -474,4 +482,3 @@ func TestSnapshot_Edges(t *testing.T) {
 		t.Fatal("expected error when target snapshot path is a directory")
 	}
 }
-
