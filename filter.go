@@ -56,9 +56,28 @@ func evalCondition(row map[string]any, cond dal.Condition) (bool, error) {
 		}
 	case dal.Comparison:
 		return evalComparison(row, c)
+	case dal.IsNullCondition:
+		return evalIsNull(row, c)
 	default:
 		return false, fmt.Errorf("%w: unsupported condition shape %T", dal.ErrNotSupported, cond)
 	}
+}
+
+// evalIsNull evaluates IS [NOT] NULL. It is always true or false, never
+// unknown: a field absent from the row, an explicit null and a nil pointer all
+// count as NULL (dal.IsNullValue).
+func evalIsNull(row map[string]any, c dal.IsNullCondition) (bool, error) {
+	var isNull bool
+	switch operand := c.Operand().(type) {
+	case dal.FieldRef:
+		value, present := row[operand.Name()]
+		isNull = !present || dal.IsNullValue(value)
+	case dal.Constant:
+		isNull = dal.IsNullValue(operand.Value)
+	default:
+		return false, fmt.Errorf("%w: IS NULL operand %T must be a field or constant", dal.ErrNotSupported, c.Operand())
+	}
+	return isNull != c.Negated(), nil
 }
 
 func evalComparison(row map[string]any, cmp dal.Comparison) (bool, error) {

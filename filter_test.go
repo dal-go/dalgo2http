@@ -1,6 +1,7 @@
 package dalgo2http
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/dal-go/dalgo/dal"
@@ -197,3 +198,60 @@ func TestCompareOrdered_AllOperatorsAndTypes(t *testing.T) {
 	}
 }
 
+func TestFilterRowsIsNull(t *testing.T) {
+	var nilPtr *string
+	str := "x"
+	rows := []map[string]any{
+		{"id": "missing"},
+		{"id": "explicit", "v": nil},
+		{"id": "nilptr", "v": nilPtr},
+		{"id": "value", "v": "a"},
+		{"id": "zero", "v": 0.0},
+		{"id": "ptr", "v": &str},
+	}
+	f := dal.NewFieldRef("", "v")
+	isNull := dal.NewIsNullCondition(f)
+	notNull := dal.NewIsNotNullCondition(f)
+	cases := []struct {
+		name string
+		cond dal.Condition
+		want []string
+	}{
+		{"is null", isNull, []string{"missing", "explicit", "nilptr"}},
+		{"is not null", notNull, []string{"value", "zero", "ptr"}},
+		{"and", dal.NewGroupCondition(dal.And, isNull, dal.WhereField("id", dal.Equal, "explicit")), []string{"explicit"}},
+		{"and not null", dal.NewGroupCondition(dal.And, notNull, dal.WhereField("id", dal.Equal, "value")), []string{"value"}},
+		{"or", dal.NewGroupCondition(dal.Or, notNull, dal.WhereField("id", dal.Equal, "missing")), []string{"missing", "value", "zero", "ptr"}},
+		{"or none", dal.NewGroupCondition(dal.Or, isNull, notNull), []string{"missing", "explicit", "nilptr", "value", "zero", "ptr"}},
+		{"constant nil", dal.NewIsNullCondition(dal.Constant{Value: nil}), []string{"missing", "explicit", "nilptr", "value", "zero", "ptr"}},
+		{"constant value", dal.NewIsNullCondition(dal.Constant{Value: 1}), nil},
+		{"constant not null", dal.NewIsNotNullCondition(dal.Constant{Value: 1}), []string{"missing", "explicit", "nilptr", "value", "zero", "ptr"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := filterRows(rows, tc.cond)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var ids []string
+			for _, r := range got {
+				ids = append(ids, r["id"].(string))
+			}
+			if len(ids) != len(tc.want) {
+				t.Fatalf("got %v, want %v", ids, tc.want)
+			}
+			for i := range ids {
+				if ids[i] != tc.want[i] {
+					t.Fatalf("got %v, want %v", ids, tc.want)
+				}
+			}
+		})
+	}
+}
+
+func TestFilterRowsIsNullUnsupportedOperand(t *testing.T) {
+	_, err := filterRows([]map[string]any{{"a": 1}}, dal.NewIsNullCondition(dal.NewArray([]any{1})))
+	if !errors.Is(err, dal.ErrNotSupported) {
+		t.Fatalf("want ErrNotSupported, got %v", err)
+	}
+}
