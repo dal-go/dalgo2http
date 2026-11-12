@@ -3,7 +3,7 @@ module github.com/dal-go/dalgo2http
 go 1.26.0
 
 require (
-	github.com/dal-go/dalgo v0.102.2
+	github.com/dal-go/dalgo v0.102.3
 	github.com/dal-go/record v0.1.5
 	gopkg.in/yaml.v3 v3.0.1
 )
